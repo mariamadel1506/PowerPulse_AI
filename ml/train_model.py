@@ -15,7 +15,7 @@ DATA_PATH = (
     "C:/Users/hp/Desktop/Hackathon power pluse/data/smart_meter_data.csv"
 )
 
-MODEL_OUTPUT_PATH = "power _anomaly_model.pkl"
+MODEL_OUTPUT_PATH = "power_anomaly_model.pkl"
 
 
 # ============================================================
@@ -244,11 +244,11 @@ print(
 
 joblib.dump(
     rf_model,
-    "power _anomaly_model.pkl"
+    "power_anomaly_model.pkl"
 )
 
 print(
-    f"\nModel saved successfully: power _anomaly_model.pkl"
+    f"\nModel saved successfully: power_anomaly_model.pkl"
 )
 
 
