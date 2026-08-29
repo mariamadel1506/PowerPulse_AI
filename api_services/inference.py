@@ -52,7 +52,7 @@ def load_model(model_path: str = "power_anomaly_model.pkl"):
             model = pickle.load(f)
         return model
     except Exception as error:
-        raise IntegrationError(f"Failed to load XGBoost model: {error}") from error
+        raise IntegrationError(f"Failed to load model: {error}") from error
 
 
 GLOBAL_MODEL = None
@@ -350,7 +350,7 @@ def run_powerguard_analysis(
     grid_stress_factor: float = 0.5,
     peak_hour_flag: int = 0,
     fortyguard_api_key: Optional[str] = None,
-    model_path: str = "models/xgboost_model.pkl",
+    model_path: str = "power_anomaly_model.pkl",
     state: Optional[str] = None,
     **kwargs
 ) -> Dict[str, Any]:
