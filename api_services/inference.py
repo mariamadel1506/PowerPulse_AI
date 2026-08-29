@@ -11,50 +11,89 @@ import requests
 
 
 # ============================================================
-# 1. PATHS / ENVIRONMENT
+# 1. ENVIRONMENT
 # ============================================================
 
-# هذا الملف موجود داخل:
-# project/
-#   main.py
-#   generate_html.py
-#   power_anomaly_model.pkl
-#   api_services/
-#       inference.py
+BASE_DIR = Path(__file__).resolve().parent
 
-INFERENCE_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = INFERENCE_DIR.parent
+# Project root:
+# api_services/inference.py
+#        ↑
+# BASE_DIR = api_services
+# PROJECT_ROOT = project root
+PROJECT_ROOT = BASE_DIR.parent
 
-# نحاول تحميل .env من أكثر من مكان
-ENV_CANDIDATES = [
-    INFERENCE_DIR / ".env",
-    PROJECT_DIR / ".env",
-]
+# Load .env locally if it exists.
+# On Vercel, Environment Variables are used automatically.
+ENV_FILE = PROJECT_ROOT / ".env"
 
-for env_file in ENV_CANDIDATES:
-    if env_file.exists():
-        load_dotenv(
-            dotenv_path=env_file,
-            override=True,
-        )
+load_dotenv(
+    dotenv_path=ENV_FILE,
+    override=False,
+)
 
-# ------------------------------------------------------------
-# Model filenames
+
+# ============================================================
+# 2. MODEL PATH
+# ============================================================
 #
-# ندعم الاسم القديم الذي فيه مسافة
-# والاسم الصحيح بدون مسافة
-# ------------------------------------------------------------
+# The original project used:
+#     power_anomaly_model.pkl
+#
+# We search several possible locations because the model may be
+# located either in the project root or inside api_services.
+#
+# This is especially useful when deploying through GitHub/Vercel.
+# ============================================================
+
+MODEL_FILENAME = "power_anomaly_model.pkl"
 
 MODEL_CANDIDATES = [
-    INFERENCE_DIR / "power_anomaly_model.pkl",
-    INFERENCE_DIR / "power _anomaly_model.pkl",
-
-    PROJECT_DIR / "power_anomaly_model.pkl",
-    PROJECT_DIR / "power _anomaly_model.pkl",
+    PROJECT_ROOT / MODEL_FILENAME,
+    BASE_DIR / MODEL_FILENAME,
+    PROJECT_ROOT / "models" / MODEL_FILENAME,
+    PROJECT_ROOT / "data" / MODEL_FILENAME,
 ]
 
 
-OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+def find_model_path() -> Path:
+    """
+    Find the trained Random Forest model.
+
+    Search order:
+        1. Project root
+        2. api_services/
+        3. models/
+        4. data/
+
+    Raises IntegrationError if the model cannot be found.
+    """
+
+    for candidate in MODEL_CANDIDATES:
+
+        if candidate.exists() and candidate.is_file():
+            return candidate
+
+    searched_paths = "\n".join(
+        f" - {path}"
+        for path in MODEL_CANDIDATES
+    )
+
+    raise IntegrationError(
+        "Model file not found.\n"
+        f"Expected filename: {MODEL_FILENAME}\n"
+        "Searched locations:\n"
+        f"{searched_paths}"
+    )
+
+
+# ============================================================
+# 3. EXTERNAL APIS
+# ============================================================
+
+OPEN_METEO_URL = (
+    "https://api.open-meteo.com/v1/forecast"
+)
 
 FORTYGUARD_URL = os.getenv(
     "FORTYGUARD_BASE_URL",
@@ -63,11 +102,8 @@ FORTYGUARD_URL = os.getenv(
 
 
 # ============================================================
-# 2. FEATURE ORDER
+# 4. MODEL FEATURE ORDER
 # ============================================================
-
-# مهم جدًا:
-# لازم يكون نفس الترتيب المستخدم أثناء التدريب.
 
 FEATURE_ORDER = [
     "Electricity_Consumed",
@@ -84,7 +120,7 @@ FEATURE_ORDER = [
 
 
 # ============================================================
-# 3. US STATE COORDINATES
+# 5. US STATE COORDINATES
 # ============================================================
 
 STATE_COORDINATES = {
@@ -116,7 +152,7 @@ STATE_COORDINATES = {
     "Montana": (45.7833, -108.5007),
     "Nebraska": (41.2565, -95.9345),
     "Nevada": (36.1699, -115.1398),
-    "New Hampshire": (42.9958, -71.4548),
+    "New Hampshire": (42.9956, -71.4548),
     "New Jersey": (40.7357, -74.1724),
     "New Mexico": (35.0844, -106.6504),
     "New York": (40.7128, -74.0060),
@@ -142,7 +178,7 @@ STATE_COORDINATES = {
 
 
 # ============================================================
-# 4. CUSTOM ERROR
+# 6. CUSTOM ERROR
 # ============================================================
 
 class IntegrationError(Exception):
@@ -150,94 +186,62 @@ class IntegrationError(Exception):
 
 
 # ============================================================
-# 5. MODEL LOADING
+# 7. MODEL LOADING
 # ============================================================
 
-_MODEL = None
-_MODEL_PATH_USED: Optional[Path] = None
-
-
-def find_model_path() -> Path:
-    """
-    يبحث عن ملف الموديل في الأماكن الصحيحة.
-
-    يدعم:
-        power_anomaly_model.pkl
-        power _anomaly_model.pkl
-    """
-
-    for candidate in MODEL_CANDIDATES:
-        if candidate.exists() and candidate.is_file():
-            return candidate
-
-    searched_paths = "\n".join(
-        f" - {path}"
-        for path in MODEL_CANDIDATES
-    )
-
-    raise IntegrationError(
-        "Model file not found.\n"
-        "Searched in:\n"
-        f"{searched_paths}\n\n"
-        "Please make sure the .pkl file is uploaded "
-        "with the deployed application."
-    )
+_MODEL_CACHE = None
 
 
 def load_model():
     """
-    Load the trained RandomForest model.
+    Load the trained Random Forest model.
 
-    يتم تحميل الموديل مرة واحدة فقط.
+    The model is cached after the first load so that repeated
+    requests do not reload the .pkl file every time.
     """
 
-    global _MODEL
-    global _MODEL_PATH_USED
+    global _MODEL_CACHE
 
-    if _MODEL is not None:
-        return _MODEL
+    if _MODEL_CACHE is not None:
+        return _MODEL_CACHE
 
     model_path = find_model_path()
 
+    print(
+        f"[PowerPulse] Loading model from: {model_path}"
+    )
+
     try:
-        _MODEL = joblib.load(model_path)
-        _MODEL_PATH_USED = model_path
-
-        print("=" * 60)
-        print("[MODEL] Model loaded successfully")
-        print(f"[MODEL] Path: {model_path}")
-        print(f"[MODEL] Type: {type(_MODEL).__name__}")
-
-        if hasattr(_MODEL, "n_features_in_"):
-            print(
-                f"[MODEL] Expected features: "
-                f"{_MODEL.n_features_in_}"
-            )
-
-        if hasattr(_MODEL, "feature_names_in_"):
-            print(
-                "[MODEL] Feature names:"
-            )
-            print(
-                list(_MODEL.feature_names_in_)
-            )
-
-        print("=" * 60)
-
-        return _MODEL
+        _MODEL_CACHE = joblib.load(model_path)
 
     except Exception as error:
+
         raise IntegrationError(
-            f"Failed to load model from "
+            f"Failed to load model "
             f"'{model_path}': {error}"
         ) from error
 
+    print(
+        "[PowerPulse] Model loaded successfully."
+    )
+
+    return _MODEL_CACHE
+
 
 # ============================================================
-# 6. FORTYGUARD CONFIGURATION
+# 8. FORTYGUARD API KEY
 # ============================================================
 
 def get_api_key() -> str:
+    """
+    Read FortyGuard API key.
+
+    Locally:
+        .env
+
+    Vercel:
+        Environment Variables
+    """
 
     api_key = os.getenv(
         "FORTYGUARD_API_KEY",
@@ -245,16 +249,24 @@ def get_api_key() -> str:
     ).strip()
 
     if not api_key:
+
         raise IntegrationError(
             "FORTYGUARD_API_KEY is missing. "
-            f"Expected it in .env file. "
-            f"Checked: {ENV_CANDIDATES}"
+            "Add it to your local .env file or "
+            "Vercel Environment Variables."
         )
 
     return api_key
 
 
+# ============================================================
+# 9. FORTYGUARD HEADERS
+# ============================================================
+
 def get_fortyguard_headers() -> Dict[str, str]:
+    """
+    FortyGuard documentation specifies `api-key`.
+    """
 
     return {
         "api-key": get_api_key(),
@@ -264,7 +276,7 @@ def get_fortyguard_headers() -> Dict[str, str]:
 
 
 # ============================================================
-# 7. STATE COORDINATES
+# 10. STATE COORDINATES
 # ============================================================
 
 def get_state_coordinates(
@@ -273,19 +285,17 @@ def get_state_coordinates(
 
     state = str(state).strip()
 
-    # محاولة مطابقة case-insensitive
-    for state_name, coordinates in STATE_COORDINATES.items():
+    if state not in STATE_COORDINATES:
 
-        if state_name.lower() == state.lower():
-            return coordinates
+        raise IntegrationError(
+            f"Invalid US state: {state}"
+        )
 
-    raise IntegrationError(
-        f"Invalid US state: {state}"
-    )
+    return STATE_COORDINATES[state]
 
 
 # ============================================================
-# 8. OPEN-METEO WEATHER
+# 11. OPEN-METEO WEATHER
 # ============================================================
 
 def get_current_weather(
@@ -305,6 +315,10 @@ def get_current_weather(
         "wind_speed_unit": "kmh",
         "timezone": "auto",
     }
+
+    print(
+        "[Open-Meteo] Requesting current weather..."
+    )
 
     try:
 
@@ -329,7 +343,7 @@ def get_current_weather(
     if response.status_code >= 400:
 
         raise IntegrationError(
-            f"Weather API error "
+            "Weather API error "
             f"{response.status_code}: "
             f"{response.text}"
         )
@@ -364,7 +378,9 @@ def get_current_weather(
         "wind_speed_10m"
     )
 
-    timestamp = current.get("time")
+    timestamp = current.get(
+        "time"
+    )
 
     if any(
         value is None
@@ -380,7 +396,7 @@ def get_current_weather(
             "Incomplete weather data returned."
         )
 
-    return {
+    weather = {
         "temperature": float(
             temperature
         ),
@@ -395,9 +411,18 @@ def get_current_weather(
         ),
     }
 
+    print(
+        "[Open-Meteo] Weather received: "
+        f"temperature={weather['temperature']}°C, "
+        f"humidity={weather['humidity']}%, "
+        f"wind={weather['wind_speed']} km/h"
+    )
+
+    return weather
+
 
 # ============================================================
-# 9. FORTYGUARD SUBMISSION
+# 12. FORTYGUARD SUBMISSION
 # ============================================================
 
 def submit_fortyguard(
@@ -441,11 +466,12 @@ def submit_fortyguard(
         },
     }
 
-    url = f"{FORTYGUARD_URL}/env_params"
+    url = (
+        f"{FORTYGUARD_URL}/env_params"
+    )
 
     print(
-        "[FortyGuard] submitting "
-        "environment analysis..."
+        "[FortyGuard] Submitting environment analysis..."
     )
 
     print(
@@ -453,8 +479,12 @@ def submit_fortyguard(
     )
 
     print(
-        f"[FortyGuard] Coordinates: "
-        f"{latitude}, {longitude}"
+        "[FortyGuard] Payload: "
+        f"latitude={payload['latitude']}, "
+        f"longitude={payload['longitude']}, "
+        f"temperature={payload['temperature']}, "
+        f"date={payload['date_time']['start_date']}, "
+        f"time={payload['date_time']['start_time']}"
     )
 
     try:
@@ -490,7 +520,8 @@ def submit_fortyguard(
 
         raise IntegrationError(
             "FortyGuard submission failed "
-            f"(HTTP {response.status_code}): {body}"
+            f"(HTTP {response.status_code}): "
+            f"{body}"
         )
 
     if not isinstance(
@@ -503,7 +534,9 @@ def submit_fortyguard(
             f"response: {response.text}"
         )
 
-    if response_data.get("error") is True:
+    if response_data.get(
+        "error"
+    ) is True:
 
         raise IntegrationError(
             "FortyGuard API rejected the request: "
@@ -542,20 +575,20 @@ def submit_fortyguard(
     )
 
     print(
-        "[FortyGuard] activity submitted "
-        f"successfully: {activity_id}"
+        "[FortyGuard] Activity submitted successfully: "
+        f"{activity_id}"
     )
 
     return activity_id
 
 
 # ============================================================
-# 10. FORTYGUARD STATUS / POLLING
+# 13. FORTYGUARD STATUS / POLLING
 # ============================================================
 
 def get_fortyguard_result(
     activity_id: str,
-    max_attempts: int = 60,
+    max_attempts: int = 30,
     wait_seconds: int = 2,
 ) -> Dict[str, Any]:
 
@@ -575,7 +608,7 @@ def get_fortyguard_result(
     )
 
     print(
-        "[FortyGuard] polling activity: "
+        "[FortyGuard] Polling activity: "
         f"{activity_id}"
     )
 
@@ -589,14 +622,14 @@ def get_fortyguard_result(
             response = requests.get(
                 url,
                 headers=get_fortyguard_headers(),
-                timeout=60,
+                timeout=30,
             )
 
         except requests.RequestException as error:
 
             raise IntegrationError(
-                "FortyGuard status connection "
-                f"error: {error}"
+                "FortyGuard status connection error: "
+                f"{error}"
             ) from error
 
         try:
@@ -606,8 +639,7 @@ def get_fortyguard_result(
         except ValueError as error:
 
             raise IntegrationError(
-                "FortyGuard status returned "
-                "invalid JSON. "
+                "FortyGuard status returned invalid JSON. "
                 f"HTTP {response.status_code}: "
                 f"{response.text}"
             ) from error
@@ -630,7 +662,9 @@ def get_fortyguard_result(
                 "is not an object."
             )
 
-        if response_data.get("error") is True:
+        if response_data.get(
+            "error"
+        ) is True:
 
             raise IntegrationError(
                 "FortyGuard status API error: "
@@ -655,14 +689,14 @@ def get_fortyguard_result(
         ).strip().lower()
 
         print(
-            f"[FortyGuard] attempt "
-            f"{attempt}/{max_attempts} "
+            "[FortyGuard] "
+            f"attempt {attempt}/{max_attempts} "
             f"status={status}"
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # COMPLETED
-        # ----------------------------------------------------
+        # ====================================================
 
         if status in {
             "completed",
@@ -688,9 +722,9 @@ def get_fortyguard_result(
 
             return data
 
-        # ----------------------------------------------------
+        # ====================================================
         # FAILED
-        # ----------------------------------------------------
+        # ====================================================
 
         if status in {
             "failed",
@@ -702,17 +736,17 @@ def get_fortyguard_result(
                 data.get("message")
                 or data.get("error")
                 or response_data.get("message")
-                or "FortyGuard processing failed."
+                or "FortyGuard activity failed."
             )
 
             raise IntegrationError(
-                f"FortyGuard processing error: "
+                "FortyGuard processing error: "
                 f"{error_message}"
             )
 
-        # ----------------------------------------------------
+        # ====================================================
         # PROCESSING
-        # ----------------------------------------------------
+        # ====================================================
 
         if attempt < max_attempts:
 
@@ -728,46 +762,56 @@ def get_fortyguard_result(
 
 
 # ============================================================
-# 11. SAFE VALUE EXTRACTION
+# 14. SAFE VALUE EXTRACTION
 # ============================================================
 
-def _first_value(
+def _first_non_null_value(
     obj: Dict[str, Any],
     keys: list[str],
-):
-
-    if not isinstance(
-        obj,
-        dict,
-    ):
-        return None
+) -> Optional[Any]:
 
     for key in keys:
 
         if key not in obj:
             continue
 
-        value = obj.get(key)
+        value = obj.get(
+            key
+        )
 
         if value is None:
             continue
 
+        # FortyGuard may return:
+        #
+        # "relative_humidity_percent": [
+        #     null,
+        #     70.2,
+        #     71.1
+        # ]
+        #
+        # Therefore do NOT blindly use value[0].
         if isinstance(
             value,
             list,
         ):
 
-            if not value:
-                continue
+            for item in value:
 
-            value = value[0]
+                if item is not None:
+
+                    return item
+
+            continue
 
         return value
 
     return None
 
 
-def _to_float_or_none(value):
+def _safe_float(
+    value: Any,
+) -> Optional[float]:
 
     if value is None:
         return None
@@ -779,11 +823,12 @@ def _to_float_or_none(value):
         TypeError,
         ValueError,
     ):
+
         return None
 
 
 # ============================================================
-# 12. EXTRACT FORTYGUARD INTELLIGENCE
+# 15. EXTRACT FORTYGUARD INTELLIGENCE
 # ============================================================
 
 def extract_fortyguard_intelligence(
@@ -863,7 +908,11 @@ def extract_fortyguard_intelligence(
 
         parameters = {}
 
-    temperature = _first_value(
+    # ========================================================
+    # TEMPERATURE
+    # ========================================================
+
+    temperature = _first_non_null_value(
         location,
         [
             "temperature",
@@ -874,7 +923,7 @@ def extract_fortyguard_intelligence(
 
     if temperature is None:
 
-        temperature = _first_value(
+        temperature = _first_non_null_value(
             parameters,
             [
                 "temperature",
@@ -883,7 +932,11 @@ def extract_fortyguard_intelligence(
             ],
         )
 
-    latitude = _first_value(
+    # ========================================================
+    # LOCATION
+    # ========================================================
+
+    latitude = _first_non_null_value(
         location,
         [
             "lat",
@@ -891,7 +944,7 @@ def extract_fortyguard_intelligence(
         ],
     )
 
-    longitude = _first_value(
+    longitude = _first_non_null_value(
         location,
         [
             "lon",
@@ -899,7 +952,11 @@ def extract_fortyguard_intelligence(
         ],
     )
 
-    humidity = _first_value(
+    # ========================================================
+    # HUMIDITY
+    # ========================================================
+
+    humidity = _first_non_null_value(
         parameters,
         [
             "relative_humidity_percent",
@@ -908,7 +965,11 @@ def extract_fortyguard_intelligence(
         ],
     )
 
-    heat_index = _first_value(
+    # ========================================================
+    # HEAT INDEX
+    # ========================================================
+
+    heat_index = _first_non_null_value(
         parameters,
         [
             "heat_index_celsius",
@@ -916,7 +977,11 @@ def extract_fortyguard_intelligence(
         ],
     )
 
-    apparent_temperature = _first_value(
+    # ========================================================
+    # APPARENT TEMPERATURE
+    # ========================================================
+
+    apparent_temperature = _first_non_null_value(
         parameters,
         [
             "apparent_temperature_celsius",
@@ -925,7 +990,11 @@ def extract_fortyguard_intelligence(
         ],
     )
 
-    wet_bulb_temperature = _first_value(
+    # ========================================================
+    # WET BULB
+    # ========================================================
+
+    wet_bulb_temperature = _first_non_null_value(
         parameters,
         [
             "wet_bulb_temperature_celsius",
@@ -934,47 +1003,68 @@ def extract_fortyguard_intelligence(
         ],
     )
 
-    return {
+    intelligence = {
 
-        "temperature":
-            _to_float_or_none(
-                temperature
-            ),
+        "temperature": _safe_float(
+            temperature
+        ),
 
-        "latitude":
-            _to_float_or_none(
-                latitude
-            ),
+        "latitude": _safe_float(
+            latitude
+        ),
 
-        "longitude":
-            _to_float_or_none(
-                longitude
-            ),
+        "longitude": _safe_float(
+            longitude
+        ),
 
-        "humidity":
-            _to_float_or_none(
-                humidity
-            ),
+        "humidity": _safe_float(
+            humidity
+        ),
 
-        "heat_index":
-            _to_float_or_none(
-                heat_index
-            ),
+        "heat_index": _safe_float(
+            heat_index
+        ),
 
-        "apparent_temperature":
-            _to_float_or_none(
-                apparent_temperature
-            ),
+        "apparent_temperature": _safe_float(
+            apparent_temperature
+        ),
 
-        "wet_bulb_temperature":
-            _to_float_or_none(
-                wet_bulb_temperature
-            ),
+        "wet_bulb_temperature": _safe_float(
+            wet_bulb_temperature
+        ),
     }
+
+    print(
+        "[FortyGuard] Extracted intelligence:"
+    )
+
+    print(
+        f"  temperature={intelligence['temperature']}"
+    )
+
+    print(
+        f"  humidity={intelligence['humidity']}"
+    )
+
+    print(
+        f"  heat_index={intelligence['heat_index']}"
+    )
+
+    print(
+        "  apparent_temperature="
+        f"{intelligence['apparent_temperature']}"
+    )
+
+    print(
+        "  wet_bulb_temperature="
+        f"{intelligence['wet_bulb_temperature']}"
+    )
+
+    return intelligence
 
 
 # ============================================================
-# 13. MODEL FEATURE ENGINEERING
+# 16. MODEL FEATURE ENGINEERING
 # ============================================================
 
 def create_model_input(
@@ -1008,18 +1098,17 @@ def create_model_input(
     epsilon = 1e-6
 
     difference = (
-        current
-        - baseline
+        current - baseline
     )
 
     consumption_ratio = (
-        current
-        / (baseline + epsilon)
+        current /
+        (baseline + epsilon)
     )
 
     consumption_change_percentage = (
-        difference
-        / (baseline + epsilon)
+        difference /
+        (baseline + epsilon)
     ) * 100.0
 
     temperature_consumption_interaction = (
@@ -1031,7 +1120,7 @@ def create_model_input(
         and consumption_ratio > 1.10
     )
 
-    input_data = {
+    features = {
 
         "Electricity_Consumed": [
             current
@@ -1074,16 +1163,14 @@ def create_model_input(
         ],
     }
 
-    df = pd.DataFrame(
-        input_data,
+    return pd.DataFrame(
+        features,
         columns=FEATURE_ORDER,
     )
 
-    return df
-
 
 # ============================================================
-# 14. MODEL PREDICTION
+# 17. MODEL PREDICTION
 # ============================================================
 
 def predict_anomaly(
@@ -1104,47 +1191,89 @@ def predict_anomaly(
     epsilon = 1e-6
 
     ratio = (
-        current
-        / (baseline + epsilon)
+        current /
+        (baseline + epsilon)
     )
 
-    # --------------------------------------------------------
-    # Validate feature count
-    # --------------------------------------------------------
+    # ========================================================
+    # NORMAL RANGE
+    # ========================================================
 
-    if hasattr(
-        model,
-        "n_features_in_",
+    if 0.80 <= ratio <= 1.20:
+
+        return {
+
+            "prediction": 0,
+
+            "prediction_status": "Normal",
+
+            "label": "Normal",
+
+            "risk_level": "LOW",
+
+            "risk_score": 0.0,
+
+            "action": (
+                "Maintain routine operational monitoring"
+            ),
+
+            "action_code": "MONITOR",
+
+            "abnormal_probability": 0.0,
+
+            "consumption_ratio": round(
+                ratio,
+                4,
+            ),
+        }
+
+    # ========================================================
+    # CRITICAL UNDER-CONSUMPTION
+    # ========================================================
+
+    if (
+        current <= 0.0
+        or ratio < 0.25
     ):
 
-        expected = int(
-            model.n_features_in_
-        )
+        return {
 
-        actual = len(
-            FEATURE_ORDER
-        )
+            "prediction": 1,
 
-        if expected != actual:
+            "prediction_status": "Abnormal",
 
-            raise IntegrationError(
-                "Model feature count mismatch. "
-                f"Model expects {expected}, "
-                f"but inference provides {actual}."
-            )
+            "label": "Abnormal",
 
-    # --------------------------------------------------------
-    # MODEL PREDICTION
-    # --------------------------------------------------------
+            "risk_level": "CRITICAL",
+
+            "risk_score": 100.0,
+
+            "action": (
+                "Mandatory deployment of emergency "
+                "field crews required due to high "
+                "probability of illicit bypass connections."
+            ),
+
+            "action_code": "CRITICAL_INSPECT",
+
+            "abnormal_probability": 1.0,
+
+            "consumption_ratio": round(
+                ratio,
+                4,
+            ),
+        }
+
+    # ========================================================
+    # RANDOM FOREST PREDICTION
+    # ========================================================
 
     try:
 
-        raw_prediction = model.predict(
-            model_input
-        )[0]
-
         model_prediction = int(
-            raw_prediction
+            model.predict(
+                model_input
+            )[0]
         )
 
     except Exception as error:
@@ -1153,9 +1282,9 @@ def predict_anomaly(
             f"Model prediction failed: {error}"
         ) from error
 
-    # --------------------------------------------------------
-    # MODEL PROBABILITY
-    # --------------------------------------------------------
+    # ========================================================
+    # PROBABILITY
+    # ========================================================
 
     if hasattr(
         model,
@@ -1164,9 +1293,11 @@ def predict_anomaly(
 
         try:
 
-            probabilities = model.predict_proba(
-                model_input
-            )[0]
+            probabilities = (
+                model.predict_proba(
+                    model_input
+                )[0]
+            )
 
             classes = list(
                 getattr(
@@ -1212,11 +1343,21 @@ def predict_anomaly(
         4,
     )
 
-    # --------------------------------------------------------
-    # FINAL MODEL LABEL
-    # --------------------------------------------------------
+    # ========================================================
+    # FINAL PREDICTION
+    # ========================================================
 
-    if model_prediction == 1:
+    if probability <= 0.50:
+
+        final_prediction = 0
+
+        prediction_status = "Normal"
+
+        label = "Normal"
+
+    else:
+
+        final_prediction = 1
 
         prediction_status = (
             "Potentially Abnormal"
@@ -1224,104 +1365,105 @@ def predict_anomaly(
 
         label = "Abnormal"
 
+    # ========================================================
+    # RISK
+    # ========================================================
+
+    if (
+        1.20 < ratio <= 2.00
+        or 0.50 <= ratio < 0.80
+    ):
+
+        risk_level = "MEDIUM"
+
+        risk_score = 50.0
+
+        action_code = "INVESTIGATE"
+
+        action = (
+            "Conduct remote telemetry audits "
+            "of smart meter logs in correlation "
+            "with localized meteorological data."
+        )
+
+    elif (
+        2.00 < ratio <= 4.00
+        or 0.25 <= ratio < 0.50
+    ):
+
+        risk_level = "HIGH"
+
+        risk_score = 75.0
+
+        action_code = "INSPECT"
+
+        action = (
+            "Mandatory dispatch of a field audit "
+            "team to conduct a physical meter "
+            "examination and diagnostic assessment."
+        )
+
     else:
+
+        risk_level = "CRITICAL"
+
+        risk_score = 100.0
+
+        action_code = "CRITICAL_INSPECT"
+
+        action = (
+            "Urgent mobilization of technical "
+            "emergency personnel alongside legal "
+            "liability procedures."
+        )
+
+    # ========================================================
+    # NORMAL PREDICTION OVERRIDE
+    # ========================================================
+
+    if final_prediction == 0:
 
         prediction_status = "Normal"
 
         label = "Normal"
 
-    # --------------------------------------------------------
-    # RISK BASED ON MODEL + CONSUMPTION DEVIATION
-    # --------------------------------------------------------
-
-    if model_prediction == 1:
-
-        if (
-            ratio < 0.25
-            or ratio > 2.00
-        ):
-
-            risk_level = "CRITICAL"
-            risk_score = 100.0
-            action_code = "CRITICAL_INSPECT"
-
-            action = (
-                "Urgent field inspection required "
-                "due to a severe consumption anomaly."
-            )
-
-        elif (
-            ratio < 0.50
-            or ratio > 1.70
-        ):
-
-            risk_level = "HIGH"
-            risk_score = 75.0
-            action_code = "INSPECT"
-
-            action = (
-                "Dispatch a field audit team to "
-                "inspect the smart meter and "
-                "associated electrical infrastructure."
-            )
-
-        else:
-
-            risk_level = "MEDIUM"
-            risk_score = 50.0
-            action_code = "INVESTIGATE"
-
-            action = (
-                "Conduct remote telemetry audits "
-                "and investigate the detected "
-                "consumption anomaly."
-            )
-
-    else:
-
         risk_level = "LOW"
+
         risk_score = 0.0
+
         action_code = "MONITOR"
 
         action = (
-            "Maintain routine operational monitoring."
+            "Maintain routine operational monitoring"
         )
 
     return {
 
-        "prediction": model_prediction,
+        "prediction": final_prediction,
 
-        "prediction_status":
-            prediction_status,
+        "prediction_status": prediction_status,
 
-        "label":
-            label,
+        "label": label,
 
-        "risk_level":
-            risk_level,
+        "risk_level": risk_level,
 
-        "risk_score":
-            risk_score,
+        "risk_score": risk_score,
 
-        "action":
-            action,
+        "action": action,
 
-        "action_code":
-            action_code,
+        "action_code": action_code,
 
-        "abnormal_probability":
-            probability,
+        "abnormal_probability": probability,
 
-        "consumption_ratio":
-            round(
-                ratio,
-                4,
-            ),
+        "consumption_ratio": round(
+            ratio,
+            4,
+        ),
     }
 
 
 # ============================================================
-# 15. COMPLETE POWERGUARD ANALYSIS
+# 18. COMPLETE POWERGUARD ANALYSIS
 # ============================================================
 
 def run_powerguard_analysis(
@@ -1352,17 +1494,7 @@ def run_powerguard_analysis(
         )
 
     # ========================================================
-    # 1. LOAD MODEL FIRST
-    # ========================================================
-
-    # مهم:
-    # لو الموديل مش موجود، هنكتشف المشكلة فورًا
-    # بدل ما ننتظر FortyGuard.
-
-    model = load_model()
-
-    # ========================================================
-    # 2. LOCATION
+    # 1. LOCATION
     # ========================================================
 
     latitude, longitude = (
@@ -1372,7 +1504,7 @@ def run_powerguard_analysis(
     )
 
     # ========================================================
-    # 3. WEATHER
+    # 2. WEATHER
     # ========================================================
 
     weather = get_current_weather(
@@ -1381,12 +1513,11 @@ def run_powerguard_analysis(
     )
 
     # ========================================================
-    # 4. FORTYGUARD
+    # 3. FORTYGUARD
     # ========================================================
 
     print(
-        "[PowerPulse] Starting "
-        "FortyGuard integration..."
+        "[PowerPulse] Starting FortyGuard integration..."
     )
 
     activity_id = submit_fortyguard(
@@ -1398,7 +1529,7 @@ def run_powerguard_analysis(
 
     fortyguard_data = get_fortyguard_result(
         activity_id=activity_id,
-        max_attempts=60,
+        max_attempts=30,
         wait_seconds=2,
     )
 
@@ -1413,65 +1544,93 @@ def run_powerguard_analysis(
     )
 
     # ========================================================
-    # 5. GET REAL FORTYGUARD VALUES
+    # 4. ENVIRONMENT DATA
+    # ========================================================
+    #
+    # IMPORTANT:
+    #
+    # FortyGuard can return null for individual fields.
+    #
+    # This does NOT mean FortyGuard failed.
+    #
+    # If FortyGuard has no humidity, use Open-Meteo humidity.
+    # If FortyGuard has no temperature, use Open-Meteo temperature.
+    #
+    # FortyGuard itself remains ACTIVE in the response.
     # ========================================================
 
-    fg_temperature = (
-        thermal_intelligence[
+    fortyguard_temperature = (
+        thermal_intelligence.get(
             "temperature"
-        ]
+        )
     )
 
-    fg_humidity = (
-        thermal_intelligence[
+    fortyguard_humidity = (
+        thermal_intelligence.get(
             "humidity"
-        ]
+        )
     )
 
-    # --------------------------------------------------------
-    # Important:
-    # If FortyGuard does not return these two values,
-    # we do NOT silently fake them.
-    # --------------------------------------------------------
+    # Temperature fallback
+    if fortyguard_temperature is None:
 
-    if fg_temperature is None:
-
-        raise IntegrationError(
-            "FortyGuard completed but did not return "
-            "temperature data."
+        model_temperature = float(
+            weather["temperature"]
         )
 
-    if fg_humidity is None:
+        print(
+            "[PowerPulse] FortyGuard did not "
+            "return temperature. "
+            "Using Open-Meteo temperature "
+            "for model input."
+        )
 
-        raise IntegrationError(
-            "FortyGuard completed but did not return "
-            "relative humidity data."
+    else:
+
+        model_temperature = float(
+            fortyguard_temperature
+        )
+
+    # Humidity fallback
+    if fortyguard_humidity is None:
+
+        model_humidity = float(
+            weather["humidity"]
+        )
+
+        print(
+            "[PowerPulse] FortyGuard did not "
+            "return relative humidity. "
+            "Using Open-Meteo humidity "
+            "for model input."
+        )
+
+    else:
+
+        model_humidity = float(
+            fortyguard_humidity
         )
 
     # ========================================================
-    # 6. MODEL INPUT
+    # 5. MODEL INPUT
     # ========================================================
 
     model_input = create_model_input(
         current_consumption=current_consumption,
         avg_past_consumption=avg_past_consumption,
-        temperature=fg_temperature,
-        humidity=fg_humidity,
+        temperature=model_temperature,
+        humidity=model_humidity,
         wind_speed=weather["wind_speed"],
     )
 
-    print(
-        "[MODEL] Input features:"
-    )
+    # ========================================================
+    # 6. LOAD MODEL
+    # ========================================================
 
-    print(
-        model_input.to_dict(
-            orient="records"
-        )[0]
-    )
+    model = load_model()
 
     # ========================================================
-    # 7. MODEL PREDICTION
+    # 7. PREDICTION
     # ========================================================
 
     prediction = predict_anomaly(
@@ -1482,242 +1641,191 @@ def run_powerguard_analysis(
     )
 
     print(
-        "[MODEL] Prediction: "
-        f"{prediction['label']}"
-    )
-
-    print(
-        "[MODEL] Probability: "
+        "[PowerPulse] Model prediction: "
+        f"{prediction['label']} "
+        f"probability="
         f"{prediction['abnormal_probability']}"
     )
 
-    print(
-        "[MODEL] Ratio: "
-        f"{prediction['consumption_ratio']}"
-    )
-
     # ========================================================
-    # 8. FINAL RESPONSE FOR UI
+    # 8. FINAL RESPONSE
     # ========================================================
 
     return {
+
+        # ----------------------------------------------------
+        # LOCATION
+        # ----------------------------------------------------
 
         "location": {
 
             "state": state,
 
-            "latitude":
-                latitude,
+            "latitude": latitude,
 
-            "longitude":
-                longitude,
+            "longitude": longitude,
         },
+
+        # ----------------------------------------------------
+        # WEATHER
+        # ----------------------------------------------------
 
         "weather": {
 
-            "temperature_c":
-                float(
-                    weather[
-                        "temperature"
-                    ]
-                ),
+            "temperature_c": float(
+                weather["temperature"]
+            ),
 
-            "humidity_percent":
-                float(
-                    weather[
-                        "humidity"
-                    ]
-                ),
+            "humidity_percent": float(
+                weather["humidity"]
+            ),
 
-            "wind_speed_kmh":
-                float(
-                    weather[
-                        "wind_speed"
-                    ]
-                ),
+            "wind_speed_kmh": float(
+                weather["wind_speed"]
+            ),
 
-            "timestamp":
-                weather[
-                    "timestamp"
-                ],
+            "timestamp": weather[
+                "timestamp"
+            ],
         },
 
-        # ====================================================
+        # ----------------------------------------------------
         # FORTYGUARD
-        # ====================================================
+        # ----------------------------------------------------
 
         "fortyguard": {
 
-            "status":
-                "available",
+            # FortyGuard successfully completed.
+            "status": "available",
 
-            "fallback_used":
-                False,
+            "fallback_used": (
+                fortyguard_temperature is None
+                or fortyguard_humidity is None
+            ),
 
-            "reason":
-                None,
+            "reason": (
+                "Some FortyGuard environmental "
+                "parameters were null; Open-Meteo "
+                "was used only for missing model inputs."
+                if (
+                    fortyguard_temperature is None
+                    or fortyguard_humidity is None
+                )
+                else None
+            ),
 
-            "activity_id":
-                activity_id,
+            "activity_id": activity_id,
 
-            "temperature_c":
-                thermal_intelligence[
+            "temperature_c": (
+                thermal_intelligence.get(
                     "temperature"
-                ],
+                )
+            ),
 
-            "humidity_percent":
-                thermal_intelligence[
+            "humidity_percent": (
+                thermal_intelligence.get(
                     "humidity"
-                ],
+                )
+            ),
 
-            "heat_index_c":
-                thermal_intelligence[
+            "heat_index_c": (
+                thermal_intelligence.get(
                     "heat_index"
-                ],
+                )
+            ),
 
-            "apparent_temperature_c":
-                thermal_intelligence[
+            "apparent_temperature_c": (
+                thermal_intelligence.get(
                     "apparent_temperature"
-                ],
+                )
+            ),
 
-            "wet_bulb_temperature_c":
-                thermal_intelligence[
+            "wet_bulb_temperature_c": (
+                thermal_intelligence.get(
                     "wet_bulb_temperature"
-                ],
+                )
+            ),
         },
 
-        # ====================================================
+        # ----------------------------------------------------
         # CONSUMPTION
-        # ====================================================
+        # ----------------------------------------------------
 
         "consumption": {
 
-            "current_kwh":
-                current_consumption,
+            "current_kwh": (
+                current_consumption
+            ),
 
-            "historical_baseline_kwh":
-                avg_past_consumption,
+            "historical_baseline_kwh": (
+                avg_past_consumption
+            ),
         },
 
-        # ====================================================
+        # ----------------------------------------------------
         # MODEL
-        # ====================================================
+        # ----------------------------------------------------
 
         "model": {
 
-            "prediction":
+            "prediction": (
                 prediction[
                     "prediction"
-                ],
+                ]
+            ),
 
-            "prediction_status":
+            "prediction_status": (
                 prediction[
                     "prediction_status"
-                ],
+                ]
+            ),
 
-            "label":
+            "label": (
                 prediction[
                     "label"
-                ],
+                ]
+            ),
 
-            "risk_level":
+            "risk_level": (
                 prediction[
                     "risk_level"
-                ],
+                ]
+            ),
 
-            "risk_score":
+            "risk_score": (
                 prediction[
                     "risk_score"
-                ],
+                ]
+            ),
 
-            "action":
+            "action": (
                 prediction[
                     "action"
-                ],
+                ]
+            ),
 
-            "action_code":
+            "action_code": (
                 prediction[
                     "action_code"
-                ],
+                ]
+            ),
 
-            "abnormal_probability":
+            "abnormal_probability": (
                 prediction[
                     "abnormal_probability"
-                ],
+                ]
+            ),
 
-            "consumption_ratio":
+            "consumption_ratio": (
                 prediction[
                     "consumption_ratio"
-                ],
+                ]
+            ),
 
-            "features":
+            "features": (
                 model_input.to_dict(
                     orient="records"
-                )[0],
+                )[0]
+            ),
         },
     }
-
-
-# ============================================================
-# 16. LOCAL TEST
-# ============================================================
-
-if __name__ == "__main__":
-
-    print("=" * 70)
-    print("PowerPulse Inference Test")
-    print("=" * 70)
-
-    try:
-
-        model = load_model()
-
-        print(
-            "\nModel loaded successfully."
-        )
-
-        print(
-            f"Model path: "
-            f"{_MODEL_PATH_USED}"
-        )
-
-        test_input = create_model_input(
-            current_consumption=100.0,
-            avg_past_consumption=500.0,
-            temperature=33.0,
-            humidity=75.0,
-            wind_speed=20.3,
-        )
-
-        print(
-            "\nTest model input:"
-        )
-
-        print(
-            test_input
-        )
-
-        result = predict_anomaly(
-            model=model,
-            model_input=test_input,
-            current_consumption=100.0,
-            avg_past_consumption=500.0,
-        )
-
-        print(
-            "\nPrediction:"
-        )
-
-        print(
-            result
-        )
-
-    except Exception as error:
-
-        print(
-            "\nERROR:"
-        )
-
-        print(
-            error
-        )
