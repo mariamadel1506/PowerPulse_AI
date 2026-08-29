@@ -52,10 +52,6 @@ logo_base64 = find_and_convert_image(
 
 
 # %%
-import streamlit as st
-import streamlit.components.v1 as components
-
-st.set_page_config(page_title="PowerPulse AI", layout="wide")
 html_template = r"""
 <!DOCTYPE html>
 <html lang="en">
@@ -3623,7 +3619,7 @@ html_template = r"""
 </body>
 </html>
 """
-components.html(html_template, height=1000, scrolling=True)
+
 
 # %%
 # Inject backend URL into the template.
