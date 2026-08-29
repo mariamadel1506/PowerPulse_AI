@@ -11,8 +11,8 @@ from flask import Flask, render_template_string
 BASE_DIR = Path(__file__).resolve().parent
 app = Flask(__name__)
 
-BACKEND_API_URL = os.getenv("POWERPULSE_API_URL", "http://127.0.0.1:8000")
 
+BACKEND_API_URL = os.getenv("POWERPULSE_API_URL", "")
 
 # %%
 def find_and_convert_image(target_names):
