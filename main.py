@@ -4,12 +4,16 @@ from typing import Any, Dict
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from api_services.inference import (
     IntegrationError,
     run_powerguard_analysis,
 )
+
+# 1. استيراد القالب الإحترافي للواجهة من ملف generate_html
+from generate_html import rendered_template
 
 
 # ============================================================
@@ -53,16 +57,12 @@ class AnalysisRequest(BaseModel):
 
 
 # ============================================================
-# 4. Root
+# 4. Root (تعديل المسار الرئيسي لعرض واجهة الـ HTML)
 # ============================================================
 
-@app.get("/")
-async def root() -> Dict[str, Any]:
-    return {
-        "status": "online",
-        "service": "PowerPulse Anomaly Detection API",
-        "model": MODEL_FILENAME,
-    }
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    return HTMLResponse(content=rendered_template)
 
 
 # ============================================================
@@ -128,7 +128,9 @@ async def analyze_power_anomaly(
             status_code=500,
             detail=f"Error processing analysis: {error}",
         )
-    # ============================================================
+
+
+# ============================================================
 # 7. Run Backend
 # ============================================================
 
