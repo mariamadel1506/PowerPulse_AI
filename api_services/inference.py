@@ -79,7 +79,7 @@ GLOBAL_MODEL = None
 try:
     GLOBAL_MODEL = load_model()
 except Exception:
-    pass
+    GLOBAL_MODEL = None
 
 
 # ==========================================
@@ -375,6 +375,7 @@ def run_powerguard_analysis(
     """
     Main orchestration function.
     """
+    global GLOBAL_MODEL
     model = GLOBAL_MODEL if GLOBAL_MODEL is not None else load_model(model_path)
 
     weather_data = fetch_weather_data(latitude, longitude)
