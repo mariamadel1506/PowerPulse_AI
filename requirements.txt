@@ -4,6 +4,8 @@ pydantic
 scikit-learn
 pandas
 numpy
-xgboost
 ipython
 python-dotenv
+streamlit
+flask
+requests
