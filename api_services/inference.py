@@ -42,8 +42,8 @@ EXPECTED_FEATURES = [
 # ==========================================
 # MODEL LOADER
 # ==========================================
-def load_model(model_path: str = "models/xgboost_model.pkl"):
-    """Loads the pre-trained XGBoost model from disk."""
+def load_model(model_path: str = "power_anomaly_model.pkl"):
+    """Loads the pre-trained model from disk."""
     if not os.path.exists(model_path):
         raise IntegrationError(f"Model file not found at path: {model_path}")
 
