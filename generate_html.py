@@ -3623,7 +3623,7 @@ html_template = r"""
 </body>
 </html>
 """
-components.html(html_code, height=1000, scrolling=True)
+components.html(html_template, height=1000, scrolling=True)
 
 # %%
 # Inject backend URL into the template.
