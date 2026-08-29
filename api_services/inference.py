@@ -40,19 +40,39 @@ EXPECTED_FEATURES = [
 
 
 # ==========================================
-# MODEL LOADER
+# MODEL LOADER (SMART PATH RESOLUTION)
 # ==========================================
 def load_model(model_path: str = "power_anomaly_model.pkl"):
-    """Loads the pre-trained model from disk."""
-    if not os.path.exists(model_path):
-        raise IntegrationError(f"Model file not found at path: {model_path}")
+    """
+    Loads the pre-trained XGBoost model.
+    Checks multiple possible fallback paths to prevent Path errors.
+    """
+    possible_paths = [
+        model_path,
+        "power_anomaly_model.pkl",
+        os.path.join(os.path.dirname(__file__), "power_anomaly_model.pkl"),
+        "models/xgboost_model.pkl",
+        "models/power_anomaly_model.pkl",
+        "ml/power_anomaly_model.pkl"
+    ]
+
+    actual_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            actual_path = path
+            break
+
+    if not actual_path:
+        raise IntegrationError(
+            f"Model file not found. Tried paths: {possible_paths}"
+        )
 
     try:
-        with open(model_path, "rb") as f:
+        with open(actual_path, "rb") as f:
             model = pickle.load(f)
         return model
     except Exception as error:
-        raise IntegrationError(f"Failed to load model: {error}") from error
+        raise IntegrationError(f"Failed to load XGBoost model from {actual_path}: {error}") from error
 
 
 GLOBAL_MODEL = None
@@ -139,7 +159,6 @@ def fetch_fortyguard_temperature(
     }
 
     try:
-        # 1. إرسال طلب التحليل
         res = requests.post(FORTYGUARD_ENV_URL, headers=headers, json=payload, timeout=10)
         if res.status_code != 200:
             return base_temp
@@ -149,7 +168,6 @@ def fetch_fortyguard_temperature(
         if not activity_id:
             return base_temp
 
-        # 2. Polling للحصول على النتيجة المنتظرة
         status_url = f"{FORTYGUARD_STATUS_URL}/{activity_id}"
         max_attempts = 5
         for _ in range(max_attempts):
@@ -355,8 +373,7 @@ def run_powerguard_analysis(
     **kwargs
 ) -> Dict[str, Any]:
     """
-    Main orchestration function. Accepts 'state' and **kwargs dynamically
-    to prevent UI parameter incompatibility errors.
+    Main orchestration function.
     """
     model = GLOBAL_MODEL if GLOBAL_MODEL is not None else load_model(model_path)
 
