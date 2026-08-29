@@ -1,5 +1,7 @@
 import os
+import time
 import pickle
+import datetime
 import numpy as np
 import pandas as pd
 import requests
@@ -17,7 +19,8 @@ class IntegrationError(Exception):
 # GLOBAL CONSTANTS & API ENDPOINTS
 # ==========================================
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
-FORTYGUARD_API_URL = "https://api.fortyguard.com/v1/temperature"
+FORTYGUARD_ENV_URL = "https://api.fortyguard.com/v1/env_params"
+FORTYGUARD_STATUS_URL = "https://api.fortyguard.com/v1/status"
 
 EXPECTED_FEATURES = [
     'Temperature',
@@ -52,7 +55,6 @@ def load_model(model_path: str = "models/xgboost_model.pkl"):
         raise IntegrationError(f"Failed to load XGBoost model: {error}") from error
 
 
-# تحميل الموديل مرة واحدة في الـ Memory لتجنب الـ I/O Overhead عند استدعاء الـ UI
 GLOBAL_MODEL = None
 try:
     GLOBAL_MODEL = load_model()
@@ -98,44 +100,74 @@ def fetch_weather_data(latitude: float, longitude: float) -> Dict[str, float]:
 def fetch_fortyguard_temperature(
     latitude: float,
     longitude: float,
-    api_key: Optional[str] = None
+    api_key: Optional[str] = None,
+    current_temp: Optional[float] = None
 ) -> float:
     """
-    Fetches microclimate temperature from FortyGuard API.
-    Falls back to Open-Meteo temperature if API request or key is unavailable.
+    Submits environmental parameters job to FortyGuard API and polls for completed results.
+    Falls back to Open-Meteo temperature if request or key is unavailable.
     """
     if not api_key:
         api_key = os.getenv("FORTYGUARD_API_KEY")
 
     if not api_key:
+        if current_temp is not None:
+            return float(current_temp)
         weather = fetch_weather_data(latitude, longitude)
         return weather["temperature"]
 
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "api-key": api_key,
         "Content-Type": "application/json"
     }
-    params = {
-        "lat": latitude,
-        "lon": longitude
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    today_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H:%M")
+
+    base_temp = current_temp if current_temp is not None else 25.0
+
+    payload = {
+        "latitude": float(latitude),
+        "longitude": float(longitude),
+        "temperature": float(base_temp),
+        "date_time": {
+            "start_date": today_str,
+            "start_time": time_str,
+            "filter_type": 1
+        }
     }
 
     try:
-        response = requests.get(
-            FORTYGUARD_API_URL,
-            headers=headers,
-            params=params,
-            timeout=10
-        )
-        if response.status_code == 200:
-            data = response.json()
-            return float(data.get("temperature", data.get("temp", 25.0)))
-        else:
-            weather = fetch_weather_data(latitude, longitude)
-            return weather["temperature"]
+        # 1. إرسال طلب التحليل
+        res = requests.post(FORTYGUARD_ENV_URL, headers=headers, json=payload, timeout=10)
+        if res.status_code != 200:
+            return base_temp
+        
+        init_data = res.json()
+        activity_id = init_data.get("data", {}).get("activity_id")
+        if not activity_id:
+            return base_temp
+
+        # 2. Polling للحصول على النتيجة المنتظرة
+        status_url = f"{FORTYGUARD_STATUS_URL}/{activity_id}"
+        max_attempts = 5
+        for _ in range(max_attempts):
+            time.sleep(1)
+            poll_res = requests.get(status_url, headers=headers, timeout=10)
+            if poll_res.status_code == 200:
+                pdata = poll_res.json()
+                if pdata.get("message") == "Completed" or pdata.get("data", {}).get("status") == "Completed":
+                    result = pdata.get("data", {}).get("result", {})
+                    locations = result.get("locations", [])
+                    if locations and "temperature" in locations[0]:
+                        return float(locations[0]["temperature"])
+                    break
+
+        return base_temp
+
     except Exception:
-        weather = fetch_weather_data(latitude, longitude)
-        return weather["temperature"]
+        return base_temp
 
 
 # ==========================================
@@ -171,7 +203,6 @@ def prepare_model_input(
         effective_temp = float(fortyguard_temp)
         ratio = current / (baseline + epsilon)
 
-        # حساب تقريبي لمخاطر الموجات الحارة
         if effective_temp > 35.0 and ratio > 1.2:
             heatwave_risk = min(1.0, (effective_temp - 35.0) * 0.1 * ratio)
         else:
@@ -219,7 +250,6 @@ def predict_anomaly(
     epsilon = 1e-6
     ratio = current / (baseline + epsilon)
 
-    # 1. التجاوز المباشر للحالات الحادّة جداً (انقطاع كامل أو سرقة صريحة)
     if current <= 0.0 or ratio < 0.25:
         return {
             "prediction": 1,
@@ -236,7 +266,6 @@ def predict_anomaly(
             "consumption_ratio": round(ratio, 4)
         }
 
-    # 2. تشغيل الموديل دائماً وحساب التوقعات والاحتمالية
     try:
         model_prediction = int(model.predict(model_input)[0])
     except Exception as error:
@@ -255,7 +284,6 @@ def predict_anomaly(
 
     probability = round(probability, 4)
 
-    # 3. تحديد حالة الشبكة ومعايير الخطورة وإزالة التضارب المنطقي
     final_prediction = 1 if probability > 0.50 else 0
 
     if final_prediction == 0:
@@ -311,10 +339,10 @@ def predict_anomaly(
 # MAIN PIPELINE EXECUTION
 # ==========================================
 def run_powerguard_analysis(
-    latitude: float,
-    longitude: float,
-    current_consumption: float,
-    avg_past_consumption: float,
+    latitude: float = 0.0,
+    longitude: float = 0.0,
+    current_consumption: float = 0.0,
+    avg_past_consumption: float = 0.0,
     prev_hour_consumption: Optional[float] = None,
     industrial_activity_index: float = 0.5,
     historical_consumption_std: float = 10.0,
@@ -322,25 +350,24 @@ def run_powerguard_analysis(
     grid_stress_factor: float = 0.5,
     peak_hour_flag: int = 0,
     fortyguard_api_key: Optional[str] = None,
-    model_path: str = "models/xgboost_model.pkl"
+    model_path: str = "models/xgboost_model.pkl",
+    state: Optional[str] = None,
+    **kwargs
 ) -> Dict[str, Any]:
     """
-    Main orchestration function.
-    Fetches environment data, builds features, runs prediction,
-    and returns full analytical results for UI presentation.
+    Main orchestration function. Accepts 'state' and **kwargs dynamically
+    to prevent UI parameter incompatibility errors.
     """
-    # 1. استخدام الموديل المخزن في الذاكرة لتفادي إعادة التحميل الكثيفة
     model = GLOBAL_MODEL if GLOBAL_MODEL is not None else load_model(model_path)
 
-    # 2. جلب البيانات الخارجية (APIs)
     weather_data = fetch_weather_data(latitude, longitude)
     fortyguard_temp = fetch_fortyguard_temperature(
         latitude,
         longitude,
-        fortyguard_api_key
+        fortyguard_api_key,
+        current_temp=weather_data.get("temperature")
     )
 
-    # 3. إعداد مصفوفة الميزات
     model_input = prepare_model_input(
         weather_data=weather_data,
         fortyguard_temp=fortyguard_temp,
@@ -354,7 +381,6 @@ def run_powerguard_analysis(
         peak_hour_flag=peak_hour_flag
     )
 
-    # 4. التنبؤ وتحليل الشذوذ
     analysis_result = predict_anomaly(
         model=model,
         model_input=model_input,
@@ -362,12 +388,12 @@ def run_powerguard_analysis(
         avg_past_consumption=avg_past_consumption
     )
 
-    # 5. المخرجات الكاملة المتوافقة 100% مع واجهة المستكشف/الـ UI
     full_payload = {
         "status": "success",
         "location": {
             "latitude": latitude,
-            "longitude": longitude
+            "longitude": longitude,
+            "state": state
         },
         "environmental_metrics": {
             "open_meteo_temp": weather_data.get("temperature"),
