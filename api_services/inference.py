@@ -459,9 +459,11 @@ def submit_fortyguard(
             "start_date": timestamp_dt.strftime(
                 "%Y-%m-%d"
             ),
-            "start_time": timestamp_dt.strftime(
-                "%H:%M"
-            ),
+            "start_time": timestamp_dt.replace(
+                minute=0,
+                second=0,
+                microsecond=0,
+            ).strftime("%H:%M"),
             "filter_type": 1,
         },
     }
@@ -588,25 +590,33 @@ def submit_fortyguard(
 
 def get_fortyguard_result(
     activity_id: str,
-    max_attempts: int = 45,
-    wait_seconds: int = 4,
+    max_attempts: int = 24,
+    wait_seconds: int = 5,
 ) -> Dict[str, Any]:
 
-    activity_id = str(activity_id).strip()
+    activity_id = str(
+        activity_id
+    ).strip()
 
     if not activity_id:
         raise IntegrationError(
             "FortyGuard activity_id is empty."
         )
 
-    url = f"{FORTYGUARD_URL}/status/{activity_id}"
+    url = (
+        f"{FORTYGUARD_URL}"
+        f"/status/{activity_id}"
+    )
 
     print(
         "[FortyGuard] Polling activity: "
         f"{activity_id}"
     )
 
-    for attempt in range(1, max_attempts + 1):
+    for attempt in range(
+        1,
+        max_attempts + 1,
+    ):
 
         try:
             response = requests.get(
@@ -614,74 +624,76 @@ def get_fortyguard_result(
                 headers=get_fortyguard_headers(),
                 timeout=20,
             )
-        except requests.RequestException as error:
 
+        except requests.RequestException as error:
+            # A temporary status-network failure should not create
+            # another activity. Re-check the SAME activity.
             print(
-                "[FortyGuard] Status connection error "
-                f"on attempt {attempt}/{max_attempts}: {error}"
+                "[FortyGuard] Temporary status error: "
+                f"{error}. Retrying same activity..."
             )
 
             if attempt < max_attempts:
-                time.sleep(min(6, wait_seconds))
+                time.sleep(wait_seconds)
                 continue
 
             raise IntegrationError(
-                "FortyGuard status connection error: "
-                f"{error}"
+                "FortyGuard status connection failed after "
+                f"{max_attempts} checks. "
+                f"activity_id={activity_id}"
             ) from error
 
         try:
             response_data = response.json()
         except ValueError as error:
+            print(
+                "[FortyGuard] Invalid JSON on status check; "
+                "retrying same activity."
+            )
 
             if attempt < max_attempts:
-                print(
-                    "[FortyGuard] Invalid status JSON; retrying."
-                )
-                time.sleep(min(6, wait_seconds))
+                time.sleep(wait_seconds)
                 continue
 
             raise IntegrationError(
                 "FortyGuard status returned invalid JSON. "
-                f"HTTP {response.status_code}: "
-                f"{response.text}"
+                f"activity_id={activity_id}"
             ) from error
 
-        if response.status_code in {
-            408, 425, 429, 500, 502, 503, 504
-        }:
-
+        # Rate limits / transient server errors: do not submit a
+        # second activity; back off and poll the same activity.
+        if response.status_code in {429, 500, 502, 503, 504}:
             print(
-                "[FortyGuard] Temporary status response "
-                f"HTTP {response.status_code}; "
-                f"attempt {attempt}/{max_attempts}."
+                "[FortyGuard] Temporary HTTP "
+                f"{response.status_code}; retrying same activity."
             )
 
             if attempt < max_attempts:
-                time.sleep(min(6, wait_seconds))
+                time.sleep(wait_seconds)
                 continue
 
             raise IntegrationError(
-                "FortyGuard status request remained unavailable "
-                f"(HTTP {response.status_code})."
+                "FortyGuard status remained unavailable. "
+                f"HTTP {response.status_code}; "
+                f"activity_id={activity_id}"
             )
 
         if response.status_code >= 400:
-
             raise IntegrationError(
                 "FortyGuard status request failed "
                 f"(HTTP {response.status_code}): "
                 f"{response_data}"
             )
 
-        if not isinstance(response_data, dict):
-
+        if not isinstance(
+            response_data,
+            dict,
+        ):
             raise IntegrationError(
                 "FortyGuard status response is not an object."
             )
 
         if response_data.get("error") is True:
-
             raise IntegrationError(
                 "FortyGuard status API error: "
                 f"{response_data.get('message', response_data)}"
@@ -700,7 +712,7 @@ def get_fortyguard_result(
 
         print(
             "[FortyGuard] "
-            f"attempt {attempt}/{max_attempts} "
+            f"check {attempt}/{max_attempts} "
             f"status={status}"
         )
 
@@ -708,17 +720,17 @@ def get_fortyguard_result(
             "completed",
             "complete",
             "success",
+            "succeeded",
             "done",
             "ok",
         }:
-
             result = data.get("result")
 
             if not isinstance(result, dict):
-
                 raise IntegrationError(
                     "FortyGuard returned Completed "
-                    "but result object is missing."
+                    "but result object is missing. "
+                    f"activity_id={activity_id}"
                 )
 
             return data
@@ -728,7 +740,6 @@ def get_fortyguard_result(
             "failure",
             "error",
         }:
-
             error_message = (
                 data.get("message")
                 or data.get("error")
@@ -738,24 +749,16 @@ def get_fortyguard_result(
 
             raise IntegrationError(
                 "FortyGuard processing error: "
-                f"{error_message}"
+                f"{error_message}; "
+                f"activity_id={activity_id}"
             )
 
         if attempt < max_attempts:
-
-            sleep_for = min(
-                6,
-                max(
-                    wait_seconds,
-                    2 + attempt // 3,
-                ),
-            )
-
-            time.sleep(sleep_for)
+            time.sleep(wait_seconds)
 
     raise TimeoutError(
         "FortyGuard activity did not complete "
-        "within the polling window. "
+        f"within {max_attempts * wait_seconds} seconds. "
         f"activity_id={activity_id}"
     )
 
@@ -769,41 +772,46 @@ def _first_non_null_value(
     keys: list[str],
 ) -> Optional[Any]:
 
+    def first_value(value: Any) -> Optional[Any]:
+
+        if value is None:
+            return None
+
+        if isinstance(value, list):
+            for item in value:
+                found = first_value(item)
+                if found is not None:
+                    return found
+            return None
+
+        if isinstance(value, dict):
+            # Some API responses may wrap the actual array/value.
+            for nested_key in (
+                "value",
+                "values",
+                "data",
+            ):
+                if nested_key in value:
+                    found = first_value(
+                        value.get(nested_key)
+                    )
+                    if found is not None:
+                        return found
+            return None
+
+        return value
+
     for key in keys:
 
         if key not in obj:
             continue
 
-        value = obj.get(
-            key
+        found = first_value(
+            obj.get(key)
         )
 
-        if value is None:
-            continue
-
-        # FortyGuard may return:
-        #
-        # "relative_humidity_percent": [
-        #     null,
-        #     70.2,
-        #     71.1
-        # ]
-        #
-        # Therefore do NOT blindly use value[0].
-        if isinstance(
-            value,
-            list,
-        ):
-
-            for item in value:
-
-                if item is not None:
-
-                    return item
-
-            continue
-
-        return value
+        if found is not None:
+            return found
 
     return None
 
@@ -1537,6 +1545,58 @@ def run_powerguard_analysis(
             fortyguard_data
         )
     )
+
+    # If the first completed payload is structurally present but
+    # environmental values are unexpectedly empty, re-read the
+    # SAME completed activity once. This does not create another
+    # FortyGuard job and prevents the repeated-activity problem.
+    if all(
+        thermal_intelligence.get(name) is None
+        for name in (
+            "humidity",
+            "heat_index",
+            "apparent_temperature",
+            "wet_bulb_temperature",
+        )
+    ):
+        print(
+            "[PowerPulse] FortyGuard completed but returned "
+            "empty environmental arrays. Re-reading the same "
+            "activity once..."
+        )
+
+        time.sleep(2)
+
+        try:
+            refreshed_data = get_fortyguard_result(
+                activity_id=activity_id,
+                max_attempts=4,
+                wait_seconds=3,
+            )
+
+            refreshed_intelligence = (
+                extract_fortyguard_intelligence(
+                    refreshed_data
+                )
+            )
+
+            if any(
+                refreshed_intelligence.get(name) is not None
+                for name in (
+                    "humidity",
+                    "heat_index",
+                    "apparent_temperature",
+                    "wet_bulb_temperature",
+                )
+            ):
+                fortyguard_data = refreshed_data
+                thermal_intelligence = refreshed_intelligence
+
+        except Exception as refresh_error:
+            print(
+                "[PowerPulse] Same-activity refresh did not "
+                f"change the result: {refresh_error}"
+            )
 
     print(
         "[PowerPulse] FortyGuard completed successfully."
