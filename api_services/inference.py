@@ -588,44 +588,42 @@ def submit_fortyguard(
 
 def get_fortyguard_result(
     activity_id: str,
-    max_attempts: int = 30,
-    wait_seconds: int = 2,
+    max_attempts: int = 45,
+    wait_seconds: int = 4,
 ) -> Dict[str, Any]:
 
-    activity_id = str(
-        activity_id
-    ).strip()
+    activity_id = str(activity_id).strip()
 
     if not activity_id:
-
         raise IntegrationError(
             "FortyGuard activity_id is empty."
         )
 
-    url = (
-        f"{FORTYGUARD_URL}"
-        f"/status/{activity_id}"
-    )
+    url = f"{FORTYGUARD_URL}/status/{activity_id}"
 
     print(
         "[FortyGuard] Polling activity: "
         f"{activity_id}"
     )
 
-    for attempt in range(
-        1,
-        max_attempts + 1,
-    ):
+    for attempt in range(1, max_attempts + 1):
 
         try:
-
             response = requests.get(
                 url,
                 headers=get_fortyguard_headers(),
-                timeout=30,
+                timeout=20,
+            )
+        except requests.RequestException as error:
+
+            print(
+                "[FortyGuard] Status connection error "
+                f"on attempt {attempt}/{max_attempts}: {error}"
             )
 
-        except requests.RequestException as error:
+            if attempt < max_attempts:
+                time.sleep(min(6, wait_seconds))
+                continue
 
             raise IntegrationError(
                 "FortyGuard status connection error: "
@@ -633,16 +631,40 @@ def get_fortyguard_result(
             ) from error
 
         try:
-
             response_data = response.json()
-
         except ValueError as error:
+
+            if attempt < max_attempts:
+                print(
+                    "[FortyGuard] Invalid status JSON; retrying."
+                )
+                time.sleep(min(6, wait_seconds))
+                continue
 
             raise IntegrationError(
                 "FortyGuard status returned invalid JSON. "
                 f"HTTP {response.status_code}: "
                 f"{response.text}"
             ) from error
+
+        if response.status_code in {
+            408, 425, 429, 500, 502, 503, 504
+        }:
+
+            print(
+                "[FortyGuard] Temporary status response "
+                f"HTTP {response.status_code}; "
+                f"attempt {attempt}/{max_attempts}."
+            )
+
+            if attempt < max_attempts:
+                time.sleep(min(6, wait_seconds))
+                continue
+
+            raise IntegrationError(
+                "FortyGuard status request remained unavailable "
+                f"(HTTP {response.status_code})."
+            )
 
         if response.status_code >= 400:
 
@@ -652,34 +674,22 @@ def get_fortyguard_result(
                 f"{response_data}"
             )
 
-        if not isinstance(
-            response_data,
-            dict,
-        ):
+        if not isinstance(response_data, dict):
 
             raise IntegrationError(
-                "FortyGuard status response "
-                "is not an object."
+                "FortyGuard status response is not an object."
             )
 
-        if response_data.get(
-            "error"
-        ) is True:
+        if response_data.get("error") is True:
 
             raise IntegrationError(
                 "FortyGuard status API error: "
                 f"{response_data.get('message', response_data)}"
             )
 
-        data = response_data.get(
-            "data"
-        )
+        data = response_data.get("data")
 
-        if not isinstance(
-            data,
-            dict,
-        ):
-
+        if not isinstance(data, dict):
             data = response_data
 
         status = str(
@@ -694,10 +704,6 @@ def get_fortyguard_result(
             f"status={status}"
         )
 
-        # ====================================================
-        # COMPLETED
-        # ====================================================
-
         if status in {
             "completed",
             "complete",
@@ -706,184 +712,16 @@ def get_fortyguard_result(
             "ok",
         }:
 
-            result = data.get(
-                "result"
-            )
+            result = data.get("result")
 
-            if not isinstance(
-                result,
-                dict,
-            ):
+            if not isinstance(result, dict):
 
                 raise IntegrationError(
                     "FortyGuard returned Completed "
                     "but result object is missing."
                 )
 
-            # ====================================================
-            # DEBUG ONLY
-            # ====================================================
-            # This block ONLY prints information about the
-            # completed FortyGuard response.
-            # It does NOT modify data or change the analysis logic.
-            # ====================================================
-
-            print("[FortyGuard DEBUG] ===== COMPLETED =====")
-            print(
-                "[FortyGuard DEBUG] activity_id="
-                + str(activity_id)
-            )
-
-            try:
-                print(
-                    "[FortyGuard DEBUG] top_level_keys="
-                    + str(list(response_data.keys()))
-                )
-
-                debug_data = response_data.get("data")
-
-                if isinstance(debug_data, dict):
-                    print(
-                        "[FortyGuard DEBUG] data_keys="
-                        + str(list(debug_data.keys()))
-                    )
-                else:
-                    print(
-                        "[FortyGuard DEBUG] data_type="
-                        + type(debug_data).__name__
-                    )
-
-                debug_result = data.get("result")
-
-                if isinstance(debug_result, dict):
-                    print(
-                        "[FortyGuard DEBUG] result_keys="
-                        + str(list(debug_result.keys()))
-                    )
-                else:
-                    print(
-                        "[FortyGuard DEBUG] result_type="
-                        + type(debug_result).__name__
-                    )
-
-                debug_locations = None
-
-                if isinstance(debug_result, dict):
-                    debug_locations = debug_result.get("locations")
-
-                print(
-                    "[FortyGuard DEBUG] locations_type="
-                    + type(debug_locations).__name__
-                )
-
-                if isinstance(debug_locations, list):
-                    print(
-                        "[FortyGuard DEBUG] locations_count="
-                        + str(len(debug_locations))
-                    )
-                else:
-                    print(
-                        "[FortyGuard DEBUG] locations_count=0"
-                    )
-
-                if (
-                    isinstance(debug_locations, list)
-                    and len(debug_locations) > 0
-                    and isinstance(debug_locations[0], dict)
-                ):
-                    debug_location = debug_locations[0]
-
-                    print(
-                        "[FortyGuard DEBUG] location_keys="
-                        + str(list(debug_location.keys()))
-                    )
-
-                    debug_parameters = debug_location.get(
-                        "parameters"
-                    )
-
-                    print(
-                        "[FortyGuard DEBUG] parameters_type="
-                        + type(debug_parameters).__name__
-                    )
-
-                    if isinstance(debug_parameters, dict):
-                        print(
-                            "[FortyGuard DEBUG] parameters_keys="
-                            + str(list(debug_parameters.keys()))
-                        )
-
-                        debug_names = [
-                            "relative_humidity_percent",
-                            "relative_humidity",
-                            "humidity",
-                            "heat_index_celsius",
-                            "heat_index",
-                            "apparent_temperature_celsius",
-                            "apparent_temperature",
-                            "feels_like",
-                            "wet_bulb_temperature_celsius",
-                            "wet_bulb_temperature",
-                            "wet_bulb",
-                        ]
-
-                        debug_environment = {}
-
-                        for debug_name in debug_names:
-                            if debug_name in debug_parameters:
-                                debug_environment[debug_name] = (
-                                    debug_parameters.get(debug_name)
-                                )
-
-                        print(
-                            "[FortyGuard DEBUG] environment_values="
-                            + str(debug_environment)
-                        )
-
-                    debug_location_names = [
-                        "temperature",
-                        "temp",
-                        "temperature_celsius",
-                        "lat",
-                        "latitude",
-                        "lon",
-                        "longitude",
-                    ]
-
-                    debug_location_values = {}
-
-                    for debug_name in debug_location_names:
-                        if debug_name in debug_location:
-                            debug_location_values[debug_name] = (
-                                debug_location.get(debug_name)
-                            )
-
-                    print(
-                        "[FortyGuard DEBUG] location_values="
-                        + str(debug_location_values)
-                    )
-
-                # Safe compact raw response for diagnosis.
-                # This is response data only; request headers/API key
-                # are not included here.
-                print(
-                    "[FortyGuard DEBUG] raw_response="
-                    + str(response_data)
-                )
-
-            except Exception as debug_error:
-                print(
-                    "[FortyGuard DEBUG] logging_error="
-                    + str(debug_error)
-                )
-
-            print("[FortyGuard DEBUG] =======================")
-
             return data
-
-        # ====================================================
-        # FAILED
-        # ====================================================
 
         if status in {
             "failed",
@@ -903,19 +741,21 @@ def get_fortyguard_result(
                 f"{error_message}"
             )
 
-        # ====================================================
-        # PROCESSING
-        # ====================================================
-
         if attempt < max_attempts:
 
-            time.sleep(
-                wait_seconds
+            sleep_for = min(
+                6,
+                max(
+                    wait_seconds,
+                    2 + attempt // 3,
+                ),
             )
+
+            time.sleep(sleep_for)
 
     raise TimeoutError(
         "FortyGuard activity did not complete "
-        f"within {max_attempts * wait_seconds} seconds. "
+        "within the polling window. "
         f"activity_id={activity_id}"
     )
 
