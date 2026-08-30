@@ -498,27 +498,9 @@ def submit_fortyguard(
 
     except requests.RequestException as error:
 
-        print(
-            "[FortyGuard] Submission connection error. "
-            "Retrying once..."
-        )
-
-        try:
-            time.sleep(1)
-
-            response = requests.post(
-                url,
-                headers=get_fortyguard_headers(),
-                json=payload,
-                timeout=60,
-            )
-
-        except requests.RequestException as retry_error:
-
-            raise IntegrationError(
-                "FortyGuard connection error after retry: "
-                f"{retry_error}"
-            ) from retry_error
+        raise IntegrationError(
+            f"FortyGuard connection error: {error}"
+        ) from error
 
     try:
 
@@ -738,6 +720,123 @@ def get_fortyguard_result(
                     "but result object is missing."
                 )
 
+            # ====================================================
+            # DEBUG ONLY — NO LOGIC CHANGE
+            # ====================================================
+            # Print the response structure and relevant values so
+            # we can compare successful vs zero-result analyses.
+            # No values are modified or replaced here.
+            # ====================================================
+
+            try:
+                debug_result = data.get("result")
+                debug_locations = (
+                    debug_result.get("locations")
+                    if isinstance(debug_result, dict)
+                    else None
+                )
+
+                debug_location = None
+
+                if (
+                    isinstance(debug_locations, list)
+                    and debug_locations
+                    and isinstance(debug_locations[0], dict)
+                ):
+                    debug_location = debug_locations[0]
+
+                debug_parameters = (
+                    debug_location.get("parameters")
+                    if isinstance(debug_location, dict)
+                    else None
+                )
+
+                print(
+                    "[FortyGuard DEBUG] "
+                    f"activity_id={activity_id}"
+                )
+                print(
+                    "[FortyGuard DEBUG] "
+                    f"top_level_keys={list(response_data.keys())}"
+                )
+                print(
+                    "[FortyGuard DEBUG] "
+                    f"data_keys={list(data.keys())}"
+                )
+                print(
+                    "[FortyGuard DEBUG] "
+                    f"result_keys={list(debug_result.keys()) "
+                    "if isinstance(debug_result, dict) else None}"
+                )
+                print(
+                    "[FortyGuard DEBUG] "
+                    f"locations_type={type(debug_locations).__name__}, "
+                    f"locations_count="
+                    f"{len(debug_locations) if isinstance(debug_locations, list) else 0}"
+                )
+                print(
+                    "[FortyGuard DEBUG] "
+                    f"location_keys="
+                    f"{list(debug_location.keys()) if isinstance(debug_location, dict) else None}"
+                )
+                print(
+                    "[FortyGuard DEBUG] "
+                    f"parameters_keys="
+                    f"{list(debug_parameters.keys()) if isinstance(debug_parameters, dict) else None}"
+                )
+
+                if isinstance(debug_parameters, dict):
+                    debug_keys = [
+                        "relative_humidity_percent",
+                        "relative_humidity",
+                        "humidity",
+                        "heat_index_celsius",
+                        "heat_index",
+                        "apparent_temperature_celsius",
+                        "apparent_temperature",
+                        "feels_like",
+                        "wet_bulb_temperature_celsius",
+                        "wet_bulb_temperature",
+                        "wet_bulb",
+                    ]
+
+                    debug_values = {
+                        key: debug_parameters.get(key)
+                        for key in debug_keys
+                        if key in debug_parameters
+                    }
+
+                    print(
+                        "[FortyGuard DEBUG] "
+                        f"environment_values={debug_values}"
+                    )
+
+                if isinstance(debug_location, dict):
+                    debug_location_values = {
+                        key: debug_location.get(key)
+                        for key in (
+                            "temperature",
+                            "temp",
+                            "temperature_celsius",
+                            "lat",
+                            "latitude",
+                            "lon",
+                            "longitude",
+                        )
+                        if key in debug_location
+                    }
+
+                    print(
+                        "[FortyGuard DEBUG] "
+                        f"location_values={debug_location_values}"
+                    )
+
+            except Exception as debug_error:
+                print(
+                    "[FortyGuard DEBUG] "
+                    f"diagnostic logging failed: {debug_error}"
+                )
+
             return data
 
         # ====================================================
@@ -843,35 +942,6 @@ def _safe_float(
     ):
 
         return None
-
-
-def _is_valid_environment_value(
-    value: Any,
-) -> bool:
-    """
-    Return True only when a FortyGuard environmental value
-    is a usable, finite number.
-
-    A zero is treated as invalid for environmental parameters
-    because it can be a placeholder/empty API value and was
-    causing the UI to display misleading zeros.
-    """
-
-    numeric_value = _safe_float(value)
-
-    if numeric_value is None:
-        return False
-
-    if numeric_value != numeric_value:  # NaN
-        return False
-
-    if numeric_value in (
-        float("inf"),
-        float("-inf"),
-    ):
-        return False
-
-    return numeric_value != 0.0
 
 
 # ============================================================
@@ -1618,40 +1688,16 @@ def run_powerguard_analysis(
         )
     )
 
-    # ========================================================
-    # ROBUST FORTYGUARD FALLBACK
-    # ========================================================
-    #
-    # FortyGuard can occasionally return null/zero placeholder
-    # values on a later analysis even when the activity itself
-    # completes successfully.
-    #
-    # Do not feed those values into the model. Use the already
-    # validated Open-Meteo values instead.
-    # ========================================================
-
-    temperature_fallback_used = (
-        not _is_valid_environment_value(
-            fortyguard_temperature
-        )
-    )
-
-    humidity_fallback_used = (
-        not _is_valid_environment_value(
-            fortyguard_humidity
-        )
-    )
-
     # Temperature fallback
-    if temperature_fallback_used:
+    if fortyguard_temperature is None:
 
         model_temperature = float(
             weather["temperature"]
         )
 
         print(
-            "[PowerPulse] FortyGuard temperature "
-            "was null/zero/invalid. "
+            "[PowerPulse] FortyGuard did not "
+            "return temperature. "
             "Using Open-Meteo temperature "
             "for model input."
         )
@@ -1663,15 +1709,15 @@ def run_powerguard_analysis(
         )
 
     # Humidity fallback
-    if humidity_fallback_used:
+    if fortyguard_humidity is None:
 
         model_humidity = float(
             weather["humidity"]
         )
 
         print(
-            "[PowerPulse] FortyGuard humidity "
-            "was null/zero/invalid. "
+            "[PowerPulse] FortyGuard did not "
+            "return relative humidity. "
             "Using Open-Meteo humidity "
             "for model input."
         )
@@ -1770,17 +1816,17 @@ def run_powerguard_analysis(
             "status": "available",
 
             "fallback_used": (
-                temperature_fallback_used
-                or humidity_fallback_used
+                fortyguard_temperature is None
+                or fortyguard_humidity is None
             ),
 
             "reason": (
-                "FortyGuard returned null, zero, or "
-                "invalid environmental values; Open-Meteo "
-                "was used for missing model inputs."
+                "Some FortyGuard environmental "
+                "parameters were null; Open-Meteo "
+                "was used only for missing model inputs."
                 if (
-                    temperature_fallback_used
-                    or humidity_fallback_used
+                    fortyguard_temperature is None
+                    or fortyguard_humidity is None
                 )
                 else None
             ),
