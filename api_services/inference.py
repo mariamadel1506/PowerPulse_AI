@@ -498,9 +498,27 @@ def submit_fortyguard(
 
     except requests.RequestException as error:
 
-        raise IntegrationError(
-            f"FortyGuard connection error: {error}"
-        ) from error
+        print(
+            "[FortyGuard] Submission connection error. "
+            "Retrying once..."
+        )
+
+        try:
+            time.sleep(1)
+
+            response = requests.post(
+                url,
+                headers=get_fortyguard_headers(),
+                json=payload,
+                timeout=60,
+            )
+
+        except requests.RequestException as retry_error:
+
+            raise IntegrationError(
+                "FortyGuard connection error after retry: "
+                f"{retry_error}"
+            ) from retry_error
 
     try:
 
@@ -720,9 +738,6 @@ def get_fortyguard_result(
                     "but result object is missing."
                 )
 
-            print("[FortyGuard] COMPLETED RAW RESPONSE:")
-            print(response_data)
-
             return data
 
         # ====================================================
@@ -828,6 +843,35 @@ def _safe_float(
     ):
 
         return None
+
+
+def _is_valid_environment_value(
+    value: Any,
+) -> bool:
+    """
+    Return True only when a FortyGuard environmental value
+    is a usable, finite number.
+
+    A zero is treated as invalid for environmental parameters
+    because it can be a placeholder/empty API value and was
+    causing the UI to display misleading zeros.
+    """
+
+    numeric_value = _safe_float(value)
+
+    if numeric_value is None:
+        return False
+
+    if numeric_value != numeric_value:  # NaN
+        return False
+
+    if numeric_value in (
+        float("inf"),
+        float("-inf"),
+    ):
+        return False
+
+    return numeric_value != 0.0
 
 
 # ============================================================
@@ -1574,16 +1618,40 @@ def run_powerguard_analysis(
         )
     )
 
+    # ========================================================
+    # ROBUST FORTYGUARD FALLBACK
+    # ========================================================
+    #
+    # FortyGuard can occasionally return null/zero placeholder
+    # values on a later analysis even when the activity itself
+    # completes successfully.
+    #
+    # Do not feed those values into the model. Use the already
+    # validated Open-Meteo values instead.
+    # ========================================================
+
+    temperature_fallback_used = (
+        not _is_valid_environment_value(
+            fortyguard_temperature
+        )
+    )
+
+    humidity_fallback_used = (
+        not _is_valid_environment_value(
+            fortyguard_humidity
+        )
+    )
+
     # Temperature fallback
-    if fortyguard_temperature is None:
+    if temperature_fallback_used:
 
         model_temperature = float(
             weather["temperature"]
         )
 
         print(
-            "[PowerPulse] FortyGuard did not "
-            "return temperature. "
+            "[PowerPulse] FortyGuard temperature "
+            "was null/zero/invalid. "
             "Using Open-Meteo temperature "
             "for model input."
         )
@@ -1595,15 +1663,15 @@ def run_powerguard_analysis(
         )
 
     # Humidity fallback
-    if fortyguard_humidity is None:
+    if humidity_fallback_used:
 
         model_humidity = float(
             weather["humidity"]
         )
 
         print(
-            "[PowerPulse] FortyGuard did not "
-            "return relative humidity. "
+            "[PowerPulse] FortyGuard humidity "
+            "was null/zero/invalid. "
             "Using Open-Meteo humidity "
             "for model input."
         )
@@ -1702,17 +1770,17 @@ def run_powerguard_analysis(
             "status": "available",
 
             "fallback_used": (
-                fortyguard_temperature is None
-                or fortyguard_humidity is None
+                temperature_fallback_used
+                or humidity_fallback_used
             ),
 
             "reason": (
-                "Some FortyGuard environmental "
-                "parameters were null; Open-Meteo "
-                "was used only for missing model inputs."
+                "FortyGuard returned null, zero, or "
+                "invalid environmental values; Open-Meteo "
+                "was used for missing model inputs."
                 if (
-                    fortyguard_temperature is None
-                    or fortyguard_humidity is None
+                    temperature_fallback_used
+                    or humidity_fallback_used
                 )
                 else None
             ),
