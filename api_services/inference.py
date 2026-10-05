@@ -242,6 +242,78 @@ def get_state_coordinates(
 # 11. OPEN-METEO WEATHER
 # ============================================================
 
+def calculate_heat_index(
+    temperature_c: float,
+    humidity: float,
+) -> float:
+    """
+    Calculate heat index from temperature and relative humidity.
+    Rothfusz regression, with temperature/humidity thresholds in °F/%.
+    """
+    temp_f = (float(temperature_c) * 9.0 / 5.0) + 32.0
+    rh = float(humidity)
+
+    # Outside the usual heat-index range, report the actual temperature.
+    if temp_f < 80.0 or rh < 40.0:
+        return round(float(temperature_c), 2)
+
+    hi_f = (
+        -42.379
+        + 2.04901523 * temp_f
+        + 10.14333127 * rh
+        - 0.22475541 * temp_f * rh
+        - 0.00683783 * temp_f * temp_f
+        - 0.05481717 * rh * rh
+        + 0.00122874 * temp_f * temp_f * rh
+        + 0.00085282 * temp_f * rh * rh
+        - 0.00000199 * temp_f * temp_f * rh * rh
+    )
+
+    # NOAA low-RH adjustment.
+    if rh < 13.0 and 80.0 <= temp_f <= 112.0:
+        adjustment = (
+            ((13.0 - rh) / 4.0)
+            * ((17.0 - abs(temp_f - 95.0)) / 17.0) ** 0.5
+        )
+        hi_f -= adjustment
+
+    # NOAA high-RH adjustment.
+    elif rh > 85.0 and 80.0 <= temp_f <= 87.0:
+        adjustment = (
+            ((rh - 85.0) / 10.0)
+            * ((87.0 - temp_f) / 5.0)
+        )
+        hi_f += adjustment
+
+    return round((hi_f - 32.0) * 5.0 / 9.0, 2)
+
+
+def calculate_wet_bulb_temperature(
+    temperature_c: float,
+    humidity: float,
+) -> float:
+    """
+    Stull (2011) approximation for wet-bulb temperature.
+    Temperature is in °C and relative humidity in %.
+    """
+    temp_c = float(temperature_c)
+    rh = max(0.0, min(100.0, float(humidity)))
+
+    wet_bulb = (
+        temp_c * __import__("math").atan(
+            0.151977 * __import__("math").sqrt(rh + 8.313659)
+        )
+        + __import__("math").atan(temp_c + rh)
+        - __import__("math").atan(rh - 1.676331)
+        + 0.00391838
+        * rh ** 1.5
+        * __import__("math").atan(0.023101 * rh)
+        - 4.686035
+    )
+
+    return round(float(wet_bulb), 2)
+
+
 def get_current_weather(
     latitude: float,
     longitude: float,
@@ -253,7 +325,8 @@ def get_current_weather(
         "current": (
             "temperature_2m,"
             "relative_humidity_2m,"
-            "wind_speed_10m"
+            "wind_speed_10m,"
+            "apparent_temperature"
         ),
         "temperature_unit": "celsius",
         "wind_speed_unit": "kmh",
@@ -322,6 +395,10 @@ def get_current_weather(
         "wind_speed_10m"
     )
 
+    apparent_temperature = current.get(
+        "apparent_temperature"
+    )
+
     timestamp = current.get(
         "time"
     )
@@ -332,6 +409,7 @@ def get_current_weather(
             temperature,
             humidity,
             wind_speed,
+            apparent_temperature,
             timestamp,
         )
     ):
@@ -349,6 +427,17 @@ def get_current_weather(
         ),
         "wind_speed": float(
             wind_speed
+        ),
+        "apparent_temperature": float(
+            apparent_temperature
+        ),
+        "heat_index": calculate_heat_index(
+            temperature,
+            humidity,
+        ),
+        "wet_bulb_temperature": calculate_wet_bulb_temperature(
+            temperature,
+            humidity,
         ),
         "timestamp": str(
             timestamp
@@ -887,9 +976,35 @@ def run_powerguard_analysis(
                 weather["wind_speed"]
             ),
 
+            "heat_index_c": float(
+                weather["heat_index"]
+            ),
+
+            "apparent_temperature_c": float(
+                weather["apparent_temperature"]
+            ),
+
+            "wet_bulb_temperature_c": float(
+                weather["wet_bulb_temperature"]
+            ),
+
             "timestamp": weather[
                 "timestamp"
             ],
+        },
+
+        # ----------------------------------------------------
+        # ENVIRONMENTAL INTELLIGENCE
+        # ----------------------------------------------------
+
+        "environmental_intelligence": {
+            "heat_index_c": float(weather["heat_index"]),
+            "apparent_temperature_c": float(
+                weather["apparent_temperature"]
+            ),
+            "wet_bulb_temperature_c": float(
+                weather["wet_bulb_temperature"]
+            ),
         },
 
         # ----------------------------------------------------
