@@ -2744,9 +2744,9 @@ html_template = r"""
 
     function calculateRisk(data) {
         const model = data.model || {};
-        const thermal = getOpenMeteoThermal(data);
+        const fg = data.environmental_intelligence || data.weather || {};
         const prob = numberOrNull(model.abnormal_probability) || 0;
-        const heatIndex = numberOrNull(thermal.heat_index_c) || 30;
+        const heatIndex = numberOrNull(fg.heat_index_c) || 30;
 
         const likelihood = Math.min(5, Math.max(1, Math.round(prob * 5)));
         const impact = heatIndex > 40 ? 5 : heatIndex > 35 ? 4 : 3;
@@ -2775,7 +2775,7 @@ html_template = r"""
     function populateResults(data) {
         const consumption = data.consumption || {};
         const weather = data.weather || {};
-        const thermal = getOpenMeteoThermal(data);
+        const fortyguard = data.environmental_intelligence || data.weather || {};
         const model = data.model || {};
         const location = data.location || {};
 
@@ -2840,126 +2840,17 @@ html_template = r"""
             `${formatNumber(weather.wind_speed_kmh, 1)} km/h`;
 
         document.getElementById("fg-heat").textContent =
-            valueWithUnit(thermal.heat_index_c, "°C");
+            valueWithUnit(fortyguard.heat_index_c, "°C");
 
         document.getElementById("fg-apparent").textContent =
-            valueWithUnit(thermal.apparent_temperature_c, "°C");
+            valueWithUnit(fortyguard.apparent_temperature_c, "°C");
 
         document.getElementById("fg-wetbulb").textContent =
-            valueWithUnit(thermal.wet_bulb_temperature_c, "°C");
+            valueWithUnit(fortyguard.wet_bulb_temperature_c, "°C");
 
         buildConsumptionChart(current, baseline);
         buildProbabilityChart(probability, model.label);
         buildResultsRiskProfileChart(data);
-    }
-
-
-    // ============================================================
-    // OPEN-METEO THERMAL INTELLIGENCE
-    // ============================================================
-
-    function getOpenMeteoThermal(data) {
-        const weather = data?.weather || {};
-
-        const temperature =
-            numberOrNull(weather.temperature_c) ??
-            numberOrNull(weather.temperature);
-
-        const humidity =
-            numberOrNull(weather.humidity_percent) ??
-            numberOrNull(weather.humidity);
-
-        const wind =
-            numberOrNull(weather.wind_speed_kmh) ??
-            numberOrNull(weather.wind_speed);
-
-        if (temperature === null || humidity === null) {
-            return {
-                heat_index_c: null,
-                apparent_temperature_c: null,
-                wet_bulb_temperature_c: null
-            };
-        }
-
-        // Open-Meteo may already provide apparent temperature.
-        // If not, use a standard wind/humidity-aware fallback.
-        let apparent = numberOrNull(
-            weather.apparent_temperature_c ??
-            weather.apparent_temperature
-        );
-
-        if (apparent === null) {
-            const windMs = Math.max(0, (wind ?? 0) / 3.6);
-            const rh = Math.min(100, Math.max(0, humidity));
-
-            const vaporPressure =
-                rh / 100 *
-                6.105 *
-                Math.exp(
-                    17.27 * temperature /
-                    (237.7 + temperature)
-                );
-
-            apparent =
-                temperature +
-                0.33 * vaporPressure -
-                0.70 * windMs -
-                4.00;
-        }
-
-        // Standard Rothfusz heat-index calculation.
-        let heatIndex = temperature;
-
-        if (temperature >= 26.7 && humidity >= 40) {
-            const T = temperature;
-            const R = humidity;
-
-            heatIndex =
-                -8.784695 +
-                1.61139411 * T +
-                2.338549 * R -
-                0.14611605 * T * R -
-                0.012308094 * T * T -
-                0.016424828 * R * R +
-                0.002211732 * T * T * R +
-                0.00072546 * T * R * R -
-                0.000003582 * T * T * R * R;
-
-            // Low-humidity adjustment.
-            if (R < 13 && T >= 26.7 && T <= 44.4) {
-                heatIndex -=
-                    ((13 - R) / 4) *
-                    Math.sqrt((17 - Math.abs(T - 35)) / 17);
-            }
-
-            // High-humidity adjustment.
-            if (R > 85 && T >= 26.7 && T <= 30.6) {
-                heatIndex +=
-                    ((R - 85) / 10) *
-                    ((30.6 - T) / 5);
-            }
-        }
-
-        // Stull (2011) approximation for wet-bulb temperature.
-        const rhClamped = Math.min(99.99, Math.max(5, humidity));
-        const wetBulb =
-            temperature *
-                Math.atan(
-                    0.151977 *
-                    Math.sqrt(rhClamped + 8.313659)
-                ) +
-            Math.atan(temperature + rhClamped) -
-            Math.atan(rhClamped - 1.676331) +
-            0.00391838 *
-                Math.pow(rhClamped, 1.5) *
-                Math.atan(0.023101 * rhClamped) -
-            4.686035;
-
-        return {
-            heat_index_c: heatIndex,
-            apparent_temperature_c: apparent,
-            wet_bulb_temperature_c: wetBulb
-        };
     }
 
 
@@ -3159,7 +3050,7 @@ html_template = r"""
     function populateClimate(data) {
         const location = data.location || {};
         const weather = data.weather || {};
-        const thermal = getOpenMeteoThermal(data);
+        const fortyguard = data.environmental_intelligence || data.weather || {};
 
         document.getElementById("climate-location-badge").textContent =
             location.state || "Unknown location";
@@ -3177,21 +3068,21 @@ html_template = r"""
             valueWithUnit(weather.wind_speed_kmh, "km/h");
 
         document.getElementById("climate-heat").textContent =
-            valueWithUnit(thermal.heat_index_c, "°C");
+            valueWithUnit(fortyguard.heat_index_c, "°C");
 
         document.getElementById("climate-apparent").textContent =
-            valueWithUnit(thermal.apparent_temperature_c, "°C");
+            valueWithUnit(fortyguard.apparent_temperature_c, "°C");
 
         document.getElementById("climate-wetbulb").textContent =
-            valueWithUnit(thermal.wet_bulb_temperature_c, "°C");
+            valueWithUnit(fortyguard.wet_bulb_temperature_c, "°C");
 
         document.getElementById("climate-fg-status").textContent =
-            thermal.heat_index_c === null
-                ? "Unavailable"
-                : "Available";
+            fortyguard.status === "available"
+                ? "Available"
+                : "Fallback used";
 
         buildWeatherChart(weather);
-        buildThermalChart(thermal);
+        buildThermalChart(fortyguard);
         buildClimateInterpretation(data);
     }
 
@@ -3320,14 +3211,14 @@ html_template = r"""
         });
     }
 
-    function buildThermalChart(thermal) {
+    function buildThermalChart(fortyguard) {
         destroyChart(thermalChart);
         const canvas = document.getElementById("thermalChart");
         if (!canvas || typeof Chart === "undefined") return;
 
-        const heatIndex = numberOrNull(thermal.heat_index_c) ?? 0;
-        const apparent = numberOrNull(thermal.apparent_temperature_c) ?? 0;
-        const wetbulb = numberOrNull(thermal.wet_bulb_temperature_c) ?? 0;
+        const heatIndex = numberOrNull(fortyguard.heat_index_c) ?? 0;
+        const apparent = numberOrNull(fortyguard.apparent_temperature_c) ?? 0;
+        const wetbulb = numberOrNull(fortyguard.wet_bulb_temperature_c) ?? 0;
 
         thermalChart = new Chart(canvas.getContext("2d"), {
             type: "bar",
@@ -3366,11 +3257,11 @@ html_template = r"""
         const container = document.getElementById("climate-interpretation");
         if (!container) return;
 
-        const thermal = getOpenMeteoThermal(data);
+        const fg = data.environmental_intelligence || data.weather || {};
         const weather = data.weather || {};
         const risk = calculateRisk(data);
 
-        const status = fg.status === "available"
+        const status = Number.isFinite(Number(fg.heat_index_c))
             ? "Open-Meteo Thermal Intelligence Active"
             : "Using Climate Fallback Mode";
 
@@ -3389,7 +3280,7 @@ html_template = r"""
             </div>
             <div class="report-row" style="border:none;padding:0;">
                 <span class="report-key">Environmental Impact Note:</span>
-                <span class="report-val">Ambient temperature at ${escapeHtml(formatNumber(weather.temperature_c))}°C with heat index at ${escapeHtml(formatNumber(thermal.heat_index_c))}°C directly influences regional power load deviations.</span>
+                <span class="report-val">Ambient temperature at ${escapeHtml(formatNumber(weather.temperature_c))}°C with heat index at ${escapeHtml(formatNumber(fg.heat_index_c))}°C directly influences regional power load deviations.</span>
             </div>
         `;
     }
@@ -3403,7 +3294,7 @@ html_template = r"""
     function populateReport(data) {
         const consumption = data.consumption || {};
         const weather = data.weather || {};
-        const thermal = getOpenMeteoThermal(data);
+        const fg = data.environmental_intelligence || data.weather || {};
         const model = data.model || {};
         const location = data.location || {};
         const risk = calculateRisk(data);
@@ -3424,10 +3315,10 @@ html_template = r"""
         };
 
         setVal("report-case-location", location.state || "--");
-        setVal("report-factors", `Temperature: ${formatNumber(weather.temperature_c)}°C, Heat Index: ${formatNumber(thermal.heat_index_c)}°C`);
+        setVal("report-factors", `Temperature: ${formatNumber(weather.temperature_c)}°C, Heat Index: ${formatNumber(fg.heat_index_c)}°C`);
         setVal("report-indicators", `Current: ${formatNumber(consumption.current_kwh)} kWh vs Baseline: ${formatNumber(consumption.historical_baseline_kwh)} kWh`);
         setVal("report-available-data", "Consumption metrics, Weather API, Open-Meteo Thermal Intelligence");
-        setVal("report-missing-data", thermal.heat_index_c === null ? "Open-Meteo thermal result unavailable for this assessment" : "None");
+        setVal("report-missing-data", Number.isFinite(Number(fg.heat_index_c)) ? "None" : "Open-Meteo thermal result unavailable for this assessment");
 
         setVal("report-likelihood", `${risk.likelihood} / 5`);
         setVal("report-impact", `${risk.impact} / 5`);
@@ -3444,7 +3335,7 @@ html_template = r"""
         if (recs) {
             recs.innerHTML = `
                 <li><strong>Action Required:</strong> ${escapeHtml(humanAction(data.decision_support?.action_code, risk))}</li>
-                <li><strong>Thermal Mitigation:</strong> Monitor infrastructure load in response to Open-Meteo apparent temperature (${escapeHtml(formatNumber(thermal.apparent_temperature_c))}°C).</li>
+                <li><strong>Thermal Mitigation:</strong> Monitor infrastructure load in response to Open-Meteo apparent temperature (${escapeHtml(formatNumber(fg.apparent_temperature_c))}°C).</li>
                 <li><strong>Verification:</strong> Re-verify meter calibration if consumption deviation exceeds 30% under normal weather norms.</li>
             `;
         }
